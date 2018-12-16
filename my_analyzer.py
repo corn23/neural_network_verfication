@@ -191,15 +191,15 @@ def analyze(nn, LB_N0, UB_N0, label):
 if __name__ == '__main__':
     from sys import argv
 
-    if len(argv) < 1 or len(argv) > 2:
+    if len(argv) < 2 or len(argv) > 3:
         print('usage: python3.6 ' + argv[0] + ' net.txt spec.txt [timeout]')
         exit(1)
     netname = argv[1]
     # specname = argv[2]
-    # epsilon = float(argv[3])
+    epsilon = float(argv[2])
 
     #netname = 'mnist_nets/mnist_relu_6_100.txt'
-    epsilon = 0.01
+    #epsilon = 0.01
     result_file_name = netname.split('/')[1].split('.')[0]+'_eps_'+str(epsilon)+'_first_3_precise_with_2_constrain'
     result_file_path = os.path.join('riai_project_output',result_file_name)
     f_output = open(result_file_path,'w')
