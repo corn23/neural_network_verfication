@@ -139,23 +139,24 @@ def analyze(nn, LB_N0, UB_N0, label):
         temp = weight * r
         h = [reduce((lambda x,y: x+y),temp[i]) for i in range(weight.shape[0])]
 
-        # compute the boundary for hidden 'h'
-        # can also do via gurobi, which is more precise
-        # potential_bd = []
-        # potential_bd.append(weight*r_lb_vec)
-        # potential_bd.append(weight*r_ub_vec)
-        # h_lb_vec = np.sum(np.min(potential_bd,axis=0),axis=1) # hidden units bound
-        # h_ub_vec = np.sum(np.max(potential_bd,axis=0),axis=1)
-
         h_lb_vec = []
         h_ub_vec = []
-        for i in range(len(h)):
-            m.setObjective(h[i], GRB.MINIMIZE)
-            m.optimize()
-            h_lb_vec.append(m.objVal)
-            m.setObjective(h[i], GRB.MAXIMIZE)
-            m.optimize()
-            h_ub_vec.append(m.objVal)
+        if layer_no <= 3:
+            for i in range(len(h)):
+                m.setObjective(h[i], GRB.MINIMIZE)
+                m.optimize()
+                h_lb_vec.append(m.objVal)
+                m.setObjective(h[i], GRB.MAXIMIZE)
+                m.optimize()
+                h_ub_vec.append(m.objVal)
+        else:
+            #compute the boundary for hidden 'h'
+            #can also do via gurobi, which is more precise
+            potential_bd = []
+            potential_bd.append(weight*r_lb_vec)
+            potential_bd.append(weight*r_ub_vec)
+            h_lb_vec = np.sum(np.min(potential_bd,axis=0),axis=1) # hidden units bound
+            h_ub_vec = np.sum(np.max(potential_bd,axis=0),axis=1)
 
         r_lb_vec = np.clip(h_lb_vec,0,np.inf) # relu units bound
         r_ub_vec = np.clip(h_ub_vec,0,np.inf)
@@ -171,6 +172,7 @@ def analyze(nn, LB_N0, UB_N0, label):
                 lambda_ = h_ub_vec[hidunit_no]/(h_ub_vec[hidunit_no]-h_lb_vec[hidunit_no])
                 mu_ = -h_lb_vec[hidunit_no]*lambda_
                 m.addConstr(r[hidunit_no] <= lambda_*h[hidunit_no]+mu_)
+                m.addConstr(r[hidunit_no] >= h[hidunit_no])
     # get final bound
     for i in range(len(r)):
         m.setObjective(r[i], GRB.MINIMIZE)
@@ -196,9 +198,9 @@ if __name__ == '__main__':
     # specname = argv[2]
     # epsilon = float(argv[3])
 
-    netname = 'mnist_nets/mnist_relu_6_50.txt'
+    netname = 'mnist_nets/mnist_relu_6_100.txt'
     epsilon = 0.01
-    result_file_name = netname.split('/')[1].split('.')[0]+'_eps_'+str(epsilon)
+    result_file_name = netname.split('/')[1].split('.')[0]+'_eps_'+str(epsilon)+'_first_3_precise_with_2_constrain'
     result_file_path = os.path.join('riai_project_output',result_file_name)
     f_output = open(result_file_path,'w')
 
@@ -207,7 +209,7 @@ if __name__ == '__main__':
     nn = parse_net(netstring)
     count = 0
     total_count = 100
-    for img_id in range(100):
+    for img_id in range(5):
         specname = os.path.join('mnist_images','img'+str(img_id)+'.txt')
         with open(specname, 'r') as specfile:
             specstring = specfile.read()
@@ -234,6 +236,6 @@ if __name__ == '__main__':
             total_count -= 1
         end = time.time()
         print("analysis time: ", (end - start), " seconds")
-        output_line = '\t'.join(['img',str(img_id),verified_output])+'\n'
+        output_line = '\t'.join(['img',str(img_id),verified_output,str(end-start)])+'\n'
         f_output.write(output_line)
     f_output.write('analysis precision  {} /  {}'.format(count,total_count))
