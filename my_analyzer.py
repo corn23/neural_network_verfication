@@ -139,38 +139,46 @@ def analyze(nn, LB_N0, UB_N0, label):
         temp = weight * r
         h = [reduce((lambda x,y: x+y),temp[i]) for i in range(weight.shape[0])]
 
-        h_lb_vec = []
-        h_ub_vec = []
+        potential_bd = []
+        potential_bd.append(weight * r_lb_vec)
+        potential_bd.append(weight * r_ub_vec)
+        h_lb_vec_sound = np.sum(np.min(potential_bd, axis=0), axis=1)  # hidden units bound
+        h_ub_vec_sound = np.sum(np.max(potential_bd, axis=0), axis=1)
+
+        h_lb_vec_precise = []
+        h_ub_vec_precise = []
         if layer_no <= 3:
             for i in range(len(h)):
                 m.setObjective(h[i], GRB.MINIMIZE)
                 m.optimize()
-                h_lb_vec.append(m.objVal)
+                try:
+                    h_lb_vec_precise.append(m.objVal)
+                except AttributeError:
+                    h_lb_vec_precise.append(h_lb_vec_sound[i])
+
                 m.setObjective(h[i], GRB.MAXIMIZE)
                 m.optimize()
-                h_ub_vec.append(m.objVal)
+                try:
+                    h_ub_vec_precise.append(m.objVal)
+                except AttributeError:
+                    h_ub_vec_precise.append(h_ub_vec_sound[i])
         else:
-            #compute the boundary for hidden 'h'
-            #can also do via gurobi, which is more precise
-            potential_bd = []
-            potential_bd.append(weight*r_lb_vec)
-            potential_bd.append(weight*r_ub_vec)
-            h_lb_vec = np.sum(np.min(potential_bd,axis=0),axis=1) # hidden units bound
-            h_ub_vec = np.sum(np.max(potential_bd,axis=0),axis=1)
+            h_lb_vec_precise = h_lb_vec_sound
+            h_ub_vec_precise = h_ub_vec_sound
 
-        r_lb_vec = np.clip(h_lb_vec,0,np.inf) # relu units bound
-        r_ub_vec = np.clip(h_ub_vec,0,np.inf)
+        r_lb_vec = np.clip(h_lb_vec_precise,0,np.inf) # relu units bound
+        r_ub_vec = np.clip(h_ub_vec_precise,0,np.inf)
 
         r = [m.addVar(name="r%s_%s" %(layer_no,hidunit_no), vtype='C', lb=0) for hidunit_no in range(len(h))]
         for hidunit_no in range(len(h)):
-            if h_lb_vec[hidunit_no] >= 0:  # r = h （maybe we can change to see if it will be faster）
+            if h_lb_vec_precise[hidunit_no] >= 0:  # r = h （maybe we can change to see if it will be faster）
                 m.addConstr(r[hidunit_no] <= h[hidunit_no])
                 m.addConstr(r[hidunit_no] >= h[hidunit_no])
-            elif h_ub_vec[hidunit_no] <= 0:  # r = 0
+            elif h_ub_vec_precise[hidunit_no] <= 0:  # r = 0
                 m.addConstr(r[hidunit_no] <= 0)
             else:  # r <= \lambad*h+\mu
-                lambda_ = h_ub_vec[hidunit_no]/(h_ub_vec[hidunit_no]-h_lb_vec[hidunit_no])
-                mu_ = -h_lb_vec[hidunit_no]*lambda_
+                lambda_ = h_ub_vec_precise[hidunit_no]/(h_ub_vec_precise[hidunit_no]-h_lb_vec_precise[hidunit_no])
+                mu_ = -h_lb_vec_precise[hidunit_no]*lambda_
                 m.addConstr(r[hidunit_no] <= lambda_*h[hidunit_no]+mu_)
                 m.addConstr(r[hidunit_no] >= h[hidunit_no])
     # get final bound
@@ -209,7 +217,7 @@ if __name__ == '__main__':
     nn = parse_net(netstring)
     count = 0
     total_count = 100
-    for img_id in range(5):
+    for img_id in range(100):
         specname = os.path.join('mnist_images','img'+str(img_id)+'.txt')
         with open(specname, 'r') as specfile:
             specstring = specfile.read()
