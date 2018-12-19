@@ -134,6 +134,8 @@ def analyze(nn, LB_N0, UB_N0, label):
     r = [m.addVar(name="i%s" % str(i),vtype='C',lb=LB_N0[i],ub=UB_N0[i]) for i in range(input_dim)]
     r_lb_vec = LB_N0
     r_ub_vec = UB_N0
+    ub_diff_list = []
+    lb_diff_list = []
     for layer_no in range(nn.numlayer):
         weight = nn.weights[layer_no]
         temp = weight * r
@@ -147,7 +149,7 @@ def analyze(nn, LB_N0, UB_N0, label):
 
         h_lb_vec_precise = []
         h_ub_vec_precise = []
-        if layer_no <= 3:
+        if 0 < layer_no < 6:
             for i in range(len(h)):
                 m.setObjective(h[i], GRB.MINIMIZE)
                 m.optimize()
@@ -162,11 +164,13 @@ def analyze(nn, LB_N0, UB_N0, label):
                     h_ub_vec_precise.append(m.objVal)
                 except AttributeError:
                     h_ub_vec_precise.append(h_ub_vec_sound[i])
+            ub_diff_list.append(np.array(h_ub_vec_precise)-np.array(h_ub_vec_sound))
+            lb_diff_list.append(np.array(h_lb_vec_precise)-np.array(h_lb_vec_sound))
         else:
             h_lb_vec_precise = h_lb_vec_sound
             h_ub_vec_precise = h_ub_vec_sound
 
-        r_lb_vec = np.clip(h_lb_vec_precise,0,np.inf) # relu units bound
+        r_lb_vec = np.clip(h_lb_vec_precise,0,np.inf) # relu units bound estimate
         r_ub_vec = np.clip(h_ub_vec_precise,0,np.inf)
 
         r = [m.addVar(name="r%s_%s" %(layer_no,hidunit_no), vtype='C', lb=0) for hidunit_no in range(len(h))]
@@ -180,21 +184,21 @@ def analyze(nn, LB_N0, UB_N0, label):
                 lambda_ = h_ub_vec_precise[hidunit_no]/(h_ub_vec_precise[hidunit_no]-h_lb_vec_precise[hidunit_no])
                 mu_ = -h_lb_vec_precise[hidunit_no]*lambda_
                 m.addConstr(r[hidunit_no] <= lambda_*h[hidunit_no]+mu_)
-                m.addConstr(r[hidunit_no] >= h[hidunit_no])
+                #m.addConstr(r[hidunit_no] >= h[hidunit_no])
     # get final bound
-    for i in range(len(r)):
-        m.setObjective(r[i], GRB.MINIMIZE)
-        m.optimize()
-        r_lb_vec[i] = m.objVal
-        m.setObjective(r[i], GRB.MAXIMIZE)
-        m.optimize()
-        r_ub_vec[i] = m.objVal
+    # for i in range(len(r)):
+    #     m.setObjective(r[i], GRB.MINIMIZE)
+    #     m.optimize()
+    #     r_lb_vec[i] = m.objVal
+    #     m.setObjective(r[i], GRB.MAXIMIZE)
+    #     m.optimize()
+    #     r_ub_vec[i] = m.objVal
 
     if np.sum(r_ub_vec >= r_lb_vec[label]) > 1:
         verified_flag = False
     else:
         verified_flag = True
-    return r_lb_vec,r_ub_vec,verified_flag
+    return r_lb_vec,r_ub_vec,verified_flag,ub_diff_list,lb_diff_list
 
 if __name__ == '__main__':
     from sys import argv
@@ -217,7 +221,7 @@ if __name__ == '__main__':
     nn = parse_net(netstring)
     count = 0
     total_count = 100
-    for img_id in range(100):
+    for img_id in range(1):
         specname = os.path.join('mnist_images','img'+str(img_id)+'.txt')
         with open(specname, 'r') as specfile:
             specstring = specfile.read()
@@ -229,7 +233,8 @@ if __name__ == '__main__':
 
         if (label == int(x0_low[0])):
             LB_N0, UB_N0 = get_perturbed_image(x0_low, epsilon)
-            lb,ub,verified_flag = analyze(nn, LB_N0, UB_N0,label)
+            lb,ub,verified_flag,ub_diff,lb_diff = analyze(nn, LB_N0, UB_N0,label)
+            np.save('diff.npy',np.concatenate((ub_diff,lb_diff),axis=0))
             if (verified_flag):
                 print("verified")
                 verified_output = 'verified'
