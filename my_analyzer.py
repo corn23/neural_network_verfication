@@ -167,8 +167,8 @@ def analyze(nn, LB_N0, UB_N0, label):
             ub_diff_list.append(np.array(h_ub_vec_precise)-np.array(h_ub_vec_sound))
             lb_diff_list.append(np.array(h_lb_vec_precise)-np.array(h_lb_vec_sound))
         else:
-            h_lb_vec_precise = h_lb_vec_sound
-            h_ub_vec_precise = h_ub_vec_sound
+            h_lb_vec_precise = h_lb_vec_sound+0.5
+            h_ub_vec_precise = h_ub_vec_sound-0.5
 
         r_lb_vec = np.clip(h_lb_vec_precise,0,np.inf) # relu units bound estimate
         r_ub_vec = np.clip(h_ub_vec_precise,0,np.inf)
