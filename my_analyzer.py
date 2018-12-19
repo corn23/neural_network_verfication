@@ -5,6 +5,7 @@ import time
 from gurobipy import *
 from functools import reduce
 import os
+import sys
 
 class layers:
     def __init__(self):
@@ -249,6 +250,7 @@ if __name__ == '__main__':
             total_count -= 1
         end = time.time()
         print("analysis time: ", (end - start), " seconds")
+        sys.stdout.flush()
         output_line = '\t'.join(['img',str(img_id),verified_output,str(end-start)])+'\n'
         f_output.write(output_line)
     f_output.write('analysis precision  {} /  {}'.format(count,total_count))
