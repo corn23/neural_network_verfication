@@ -110,7 +110,8 @@ def predict(nn, input_arr):
     r = input_arr
     for layer_no in range(nn.numlayer):
         weight = nn.weights[layer_no]
-        h = np.matmul(weight,r)
+        bias = nn.biases[layer_no]
+        h = np.matmul(weight,r)+bias
         r = np.clip(h,0,np.inf)
     label = np.argmax(r)
     return label
@@ -143,8 +144,9 @@ def analyze(nn, LB_N0, UB_N0, label):
     lb_diff_list = []
     for layer_no in range(nn.numlayer):
         weight = nn.weights[layer_no]
+        bias = nn.biases[layer_no]
         temp = weight * r
-        h = [reduce((lambda x,y: x+y),temp[i]) for i in range(weight.shape[0])]
+        h = [reduce((lambda x,y: x+y),temp[i]) for i in range(weight.shape[0])]+bias
 
         potential_bd = []
         potential_bd.append(weight * r_lb_vec)
@@ -200,14 +202,6 @@ def analyze(nn, LB_N0, UB_N0, label):
                 mu_ = -h_lb_vec_precise[hidunit_no]*lambda_
                 m.addConstr(r[hidunit_no] <= lambda_*h[hidunit_no]+mu_)
                 m.addConstr(r[hidunit_no] >= h[hidunit_no])
-    # get final bound
-    # for i in range(len(r)):
-    #     m.setObjective(r[i], GRB.MINIMIZE)
-    #     m.optimize()
-    #     r_lb_vec[i] = m.objVal
-    #     m.setObjective(r[i], GRB.MAXIMIZE)
-    #     m.optimize()
-    #     r_ub_vec[i] = m.objVal
     bound_list =np.concatenate((ub_precise_list,ub_sound_list,lb_precise_list,lb_sound_list),axis=0)
     diff_list = np.concatenate((ub_diff_list,lb_diff_list),axis=0)
     if np.sum(r_ub_vec >= r_lb_vec[label]) > 1:
@@ -228,7 +222,7 @@ if __name__ == '__main__':
 
     #netname = 'mnist_nets/mnist_relu_6_100.txt'
     #epsilon = 0.01
-    result_file_name = netname.split('/')[1].split('.')[0]+'_eps_'+str(epsilon)+'_first_3_precise_with_2_constrain'
+    result_file_name = netname.split('/')[1].split('.')[0]+'_eps_'+str(epsilon)+'_first_3_precise_with_2_constrain_single'
     result_file_path = os.path.join('riai_project_output',result_file_name)
     f_output = open(result_file_path,'w')
 
@@ -237,7 +231,7 @@ if __name__ == '__main__':
     nn = parse_net(netstring)
     count = 0
     total_count = 100
-    for img_id in range(1):
+    for img_id in [1]:
         specname = os.path.join('mnist_images','img'+str(img_id)+'.txt')
         with open(specname, 'r') as specfile:
             specstring = specfile.read()
@@ -270,3 +264,13 @@ if __name__ == '__main__':
         output_line = '\t'.join(['img',str(img_id),verified_output,str(end-start)])+'\n'
         f_output.write(output_line)
     f_output.write('analysis precision  {} /  {}'.format(count,total_count))
+
+# max_purt = []
+# cor = []
+# for i in (range(7)):
+#     bdlen = bound[i]-bound[i+14]
+#     purt = np.sum(np.abs(nn.weights[i+1]*bdlen),axis = 1)
+#     max_purt.append(purt)
+#     cor.append(np.corrcoef(purt,diff[i])[0,1])
+# max_purt = np.array(max_purt)
+
