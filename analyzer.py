@@ -1,26 +1,21 @@
-import sys
-sys.path.insert(0, '../ELINA/python_interface/')
-
-
 import numpy as np
 import re
 import csv
-from elina_box import *
-from elina_interval import *
-from elina_abstract0 import *
-from elina_manager import *
-from elina_dimension import *
-from elina_scalar import *
-from elina_interval import *
-from elina_linexpr0 import *
-from elina_lincons0 import *
-import ctypes
-from ctypes.util import find_library
-from gurobipy import *
 import time
+from gurobipy import *
+from functools import reduce
+import os
+import sys
+import signal
 
-libc = CDLL(find_library('c'))
-cstdout = c_void_p.in_dll(libc, 'stdout')
+class TimeoutException(Exception):   # Custom exception class
+    pass
+
+def timeout_handler(signum, frame):   # Custom signal handler
+    raise TimeoutException
+
+# Change the behavior of SIGALRM
+signal.signal(signal.SIGALRM, timeout_handler)
 
 class layers:
     def __init__(self):
@@ -36,8 +31,9 @@ def parse_bias(text):
     if text[-1] != ']':
         raise Exception("expected ']'")
     v = np.array([*map(lambda x: np.double(x.strip()), text[1:-1].split(','))])
-    #return v.reshape((v.size,1))
+    # return v.reshape((v.size,1))
     return v
+
 
 def parse_vector(text):
     if len(text) < 1 or text[0] != '[':
@@ -45,8 +41,9 @@ def parse_vector(text):
     if text[-1] != ']':
         raise Exception("expected ']'")
     v = np.array([*map(lambda x: np.double(x.strip()), text[1:-1].split(','))])
-    return v.reshape((v.size,1))
-    #return v
+    return v.reshape((v.size, 1))
+    # return v
+
 
 def balanced_split(text):
     i = 0
@@ -60,11 +57,12 @@ def balanced_split(text):
             bal -= 1
         elif text[i] == ',' and bal == 0:
             result.append(text[start:i])
-            start = i+1
+            start = i + 1
         i += 1
     if start < i:
         result.append(text[start:i])
     return result
+
 
 def parse_matrix(text):
     i = 0
@@ -74,172 +72,289 @@ def parse_matrix(text):
         raise Exception("expected ']'")
     return np.array([*map(lambda x: parse_vector(x.strip()).flatten(), balanced_split(text[1:-1]))])
 
+
 def parse_net(text):
     lines = [*filter(lambda x: len(x) != 0, text.split('\n'))]
     i = 0
     res = layers()
     while i < len(lines):
         if lines[i] in ['ReLU', 'Affine']:
-            W = parse_matrix(lines[i+1])
-            b = parse_bias(lines[i+2])
+            W = parse_matrix(lines[i + 1])
+            b = parse_bias(lines[i + 2])
             res.layertypes.append(lines[i])
             res.weights.append(W)
             res.biases.append(b)
-            res.numlayer+= 1
+            res.numlayer += 1
             i += 3
         else:
-            raise Exception('parse error: '+lines[i])
+            raise Exception('parse error: ' + lines[i])
     return res
-   
+
+
 def parse_spec(text):
     text = text.replace("[", "")
     text = text.replace("]", "")
     with open('dummy', 'w') as my_file:
         my_file.write(text)
-    data = np.genfromtxt('dummy', delimiter=',',dtype=np.double)
-    low = np.copy(data[:,0])
-    high = np.copy(data[:,1])
-    return low,high
+    data = np.genfromtxt('dummy', delimiter=',', dtype=np.double)
+    low = np.copy(data[:, 0])
+    high = np.copy(data[:, 1])
+    return low, high
+
 
 def get_perturbed_image(x, epsilon):
     image = x[1:len(x)]
     num_pixels = len(image)
     LB_N0 = image - epsilon
     UB_N0 = image + epsilon
-     
+
     for i in range(num_pixels):
-        if(LB_N0[i] < 0):
+        if (LB_N0[i] < 0):
             LB_N0[i] = 0
-        if(UB_N0[i] > 1):
+        if (UB_N0[i] > 1):
             UB_N0[i] = 1
     return LB_N0, UB_N0
 
 
-def generate_linexpr0(weights, bias, size):
-    linexpr0 = elina_linexpr0_alloc(ElinaLinexprDiscr.ELINA_LINEXPR_DENSE, size)
-    cst = pointer(linexpr0.contents.cst)
-    elina_scalar_set_double(cst.contents.val.scalar, bias)
-    for i in range(size):
-        elina_linexpr0_set_coeff_scalar_double(linexpr0,i,weights[i])
-    return linexpr0
+def predict(nn, input_arr):
+    r = input_arr
+    for layer_no in range(nn.numlayer):
+        weight = nn.weights[layer_no]
+        bias = nn.biases[layer_no]
+        h = np.matmul(weight,r)+bias
+        r = np.clip(h,0,np.inf)
+    label = np.argmax(r)
+    return label
 
-def analyze(nn, LB_N0, UB_N0, label):   
-    num_pixels = len(LB_N0)
-    nn.ffn_counter = 0
-    numlayer = nn.numlayer 
-    man = elina_box_manager_alloc()
-    itv = elina_interval_array_alloc(num_pixels)
-    for i in range(num_pixels):
-        elina_interval_set_double(itv[i],LB_N0[i],UB_N0[i])
 
-    ## construct input abstraction
-    element = elina_abstract0_of_box(man, 0, num_pixels, itv)
-    elina_interval_array_free(itv,num_pixels)
-    for layerno in range(numlayer):
-        if(nn.layertypes[layerno] in ['ReLU', 'Affine']):
-           weights = nn.weights[nn.ffn_counter]
-           biases = nn.biases[nn.ffn_counter]
-           dims = elina_abstract0_dimension(man,element)
-           num_in_pixels = dims.intdim + dims.realdim
-           num_out_pixels = len(weights)
-
-           dimadd = elina_dimchange_alloc(0,num_out_pixels)    
-           for i in range(num_out_pixels):
-               dimadd.contents.dim[i] = num_in_pixels
-           elina_abstract0_add_dimensions(man, True, element, dimadd, False)
-           elina_dimchange_free(dimadd)
-           np.ascontiguousarray(weights, dtype=np.double)
-           np.ascontiguousarray(biases, dtype=np.double)
-           var = num_in_pixels
-           # handle affine layer
-           for i in range(num_out_pixels):
-               tdim= ElinaDim(var)
-               linexpr0 = generate_linexpr0(weights[i],biases[i],num_in_pixels)
-               element = elina_abstract0_assign_linexpr_array(man, True, element, tdim, linexpr0, 1, None)
-               var+=1
-           dimrem = elina_dimchange_alloc(0,num_in_pixels)
-           for i in range(num_in_pixels):
-               dimrem.contents.dim[i] = i
-           elina_abstract0_remove_dimensions(man, True, element, dimrem)
-           elina_dimchange_free(dimrem)
-           # handle ReLU layer 
-           if(nn.layertypes[layerno]=='ReLU'):
-              element = relu_box_layerwise(man,True,element,0, num_out_pixels)
-           nn.ffn_counter+=1 
-
-        else:
-           print(' net type not supported')
-   
-    dims = elina_abstract0_dimension(man,element)
-    output_size = dims.intdim + dims.realdim
-    # get bounds for each output neuron
-    bounds = elina_abstract0_to_box(man,element)
-
-           
-    # if epsilon is zero, try to classify else verify robustness 
-    
-    verified_flag = True
-    predicted_label = 0
-    if(LB_N0[0]==UB_N0[0]):
-        for i in range(output_size):
-            inf = bounds[i].contents.inf.contents.val.dbl
-            flag = True
-            for j in range(output_size):
-                if(j!=i):
-                   sup = bounds[j].contents.sup.contents.val.dbl
-                   if(inf<=sup):
-                      flag = False
-                      break
-            if(flag):
-                predicted_label = i
-                break    
+def sample_lp(m,h,h_lb_vec_sound,h_ub_vec_sound,random_sample=False):
+    if len(h) == 1024:
+        sample_neuron_num = 5
+    elif len(h) == 10:
+        sample_neuron_num = 2
     else:
-        inf = bounds[label].contents.inf.contents.val.dbl
-        for j in range(output_size):
-            if(j!=label):
-                sup = bounds[j].contents.sup.contents.val.dbl
-                if(inf<=sup):
-                    predicted_label = label
-                    verified_flag = False
-                    break
+        sample_neuron_num = 10
+    ub_diff_list = []
+    lb_diff_list = []
+    h_lb_vec_precise = np.array(h_lb_vec_sound)
+    h_ub_vec_precise = np.array(h_ub_vec_sound)
+    if random_sample:
+        sample_id = np.random.randint(0,len(h),sample_neuron_num)
+    else:
+        sample_id = range(sample_neuron_num)
 
-    elina_interval_array_free(bounds,output_size)
-    elina_abstract0_free(man,element)
-    elina_manager_free(man)        
-    return predicted_label, verified_flag
+    for i in sample_id:
+        a = time.time()
+        m.setObjective(h[i], GRB.MINIMIZE)
+        m.optimize()
+        if hasattr(m,'objVal'):
+            h_lb_vec_precise[i] = m.objVal
+            lb_diff = m.objVal - h_lb_vec_sound[i]
+            lb_diff_list.append(lb_diff)
+            print(i, time.time() - a, m.objVal,h_lb_vec_sound[i])
+        else:
+            lb_diff_list.append(0)
+            # print(i, time.time() - a, 0)
+        a = time.time()
+        m.setObjective(h[i], GRB.MAXIMIZE)
+        m.optimize()
 
+        if hasattr(m, 'objVal'):
+            h_ub_vec_precise[i] = m.objVal
+            ub_diff = h_ub_vec_sound[i] - m.objVal
+            ub_diff_list.append(ub_diff)
+            print(i, time.time() - a, m.objVal,h_ub_vec_sound[i])
+        else:
+            ub_diff_list.append(0)
+            # print(i, time.time() - a, 0)
+    lb_diff_est = np.min(lb_diff_list)
+    ub_diff_est = np.min(ub_diff_list)
+
+    singular_thre = np.min(h_ub_vec_sound-h_lb_vec_sound)
+    while singular_thre < lb_diff_est+ub_diff_est:
+        lb_diff_est /= 2
+        ub_diff_est /= 2
+
+    h_lb_vec_precise[sample_neuron_num:] = h_lb_vec_sound[sample_neuron_num:]+lb_diff_est
+    h_ub_vec_precise[sample_neuron_num:] = h_ub_vec_sound[sample_neuron_num:]-ub_diff_est
+    return h_ub_vec_precise,h_lb_vec_precise
+
+
+def full_lp(m, h, h_lb_vec_sound, h_ub_vec_sound):
+    h_lb_vec_precise = np.array(h_lb_vec_sound)
+    h_ub_vec_precise = np.array(h_ub_vec_sound)
+    for i in range(len(h)):
+
+        a = time.time()
+        m.setObjective(h[i], GRB.MINIMIZE)
+        m.optimize()
+        # print(i, time.time() - a)
+        if hasattr(m,'objVal'):
+            h_lb_vec_precise[i] = m.objVal
+
+        a = time.time()
+        m.setObjective(h[i], GRB.MAXIMIZE)
+        m.optimize()
+        # print(i, time.time() - a)
+        if hasattr(m,'objVal'):
+            h_ub_vec_precise[i] = m.objVal
+    return h_ub_vec_precise,h_lb_vec_precise
+
+
+def symmetric_lp(m,h,h_lb_vec_sound,h_ub_vec_sound):
+    h_lb_vec_precise = np.array(h_lb_vec_sound)
+    h_ub_vec_precise = np.array(h_ub_vec_sound)
+    for i in range(len(h)):
+
+        a = time.time()
+        m.setObjective(h[i], GRB.MINIMIZE)
+        m.optimize()
+        #print(i, time.time() - a)
+        if hasattr(m, 'objVal'):
+            h_lb_vec_precise[i] = m.objVal
+            diff = m.objVal - h_lb_vec_sound[i]
+            h_ub_vec_precise[i] = h_ub_vec_sound[i]-diff
+
+    return h_ub_vec_precise, h_lb_vec_precise
+
+
+def decide_strategy(netname):
+    items = netname.split('.')[0].split('_')
+    layer_num = int(items[-2])
+    unit_num = int(items[-1])
+
+    if layer_num == 3:
+        layer_strategy = [0,1,1]
+    elif layer_num == 6 and unit_num <= 100:
+        layer_strategy = [0,1,1,1,1,1]
+    elif layer_num == 6 and unit_num == 200:
+        layer_strategy = [0,1,1,1,2,1]
+    elif layer_num == 9 and unit_num == 100:
+        layer_strategy = [0,1,1,1,1,1,2,2,1]
+    elif layer_num == 9 and unit_num == 200:
+        layer_strategy = [0,1,1,2,2,3,3,3,0]
+    elif layer_num == 4 and unit_num == 1024:
+        layer_strategy = [0,2,3,3]
+    else:
+        layer_strategy = np.ones(layer_num,type==int)
+    return layer_strategy
+
+
+def analyze(nn, LB_N0, UB_N0, label, layer_strategy):
+    # Create a new model
+    m = Model("mip1")
+    m.setParam('OutputFlag', False)
+    # Create variables
+    input_dim = len(LB_N0)
+    r = [m.addVar(name="i%s" % str(i),vtype='C',lb=LB_N0[i],ub=UB_N0[i]) for i in range(input_dim)]
+    r_lb_vec = LB_N0
+    r_ub_vec = UB_N0
+    for layer_no in range(nn.numlayer):
+        print("calculating layer {}".format(layer_no))
+        weight = nn.weights[layer_no]
+        bias = nn.biases[layer_no]
+        temp = weight * r
+        h = [reduce((lambda x,y: x+y),temp[i]) for i in range(weight.shape[0])]+bias
+
+        potential_bd = []
+        potential_bd.append(weight * r_lb_vec)
+        potential_bd.append(weight * r_ub_vec)
+        h_lb_vec_sound = np.sum(np.min(potential_bd, axis=0), axis=1)  # hidden units bound
+        h_ub_vec_sound = np.sum(np.max(potential_bd, axis=0), axis=1)
+
+        if layer_strategy[layer_no] == 0:
+            h_ub_vec_precise,h_lb_vec_precise = h_ub_vec_sound,h_lb_vec_sound
+        elif layer_strategy[layer_no] == 1:
+            h_ub_vec_precise, h_lb_vec_precise = full_lp(m,h,h_lb_vec_sound,h_ub_vec_sound)
+        elif layer_strategy[layer_no] == 2:
+            h_ub_vec_precise, h_lb_vec_precise = symmetric_lp(m,h,h_lb_vec_sound,h_ub_vec_sound)
+        elif layer_strategy[layer_no] == 3:
+            h_ub_vec_precise,h_lb_vec_precise = sample_lp(m,h,h_lb_vec_sound,h_ub_vec_sound)
+        else:
+            h_ub_vec_precise, h_lb_vec_precise = full_lp(m,h,h_lb_vec_sound,h_ub_vec_sound)
+
+        r_lb_vec = np.clip(h_lb_vec_precise,0,np.inf) # relu units bound estimate
+        r_ub_vec = np.clip(h_ub_vec_precise,0,np.inf)
+
+        r = [m.addVar(name="r%s_%s" %(layer_no,hidunit_no), vtype='C', lb=0) for hidunit_no in range(len(h))]
+        for hidunit_no in range(len(h)):
+            if h_lb_vec_precise[hidunit_no] >= 0:  # r = h （maybe we can change to see if it will be faster）
+                m.addConstr(r[hidunit_no] <= h[hidunit_no])
+                m.addConstr(r[hidunit_no] >= h[hidunit_no])
+            elif h_ub_vec_precise[hidunit_no] <= 0:  # r = 0
+                m.addConstr(r[hidunit_no] <= 0)
+            else:  # r <= \lambad*h+\mu
+                lambda_ = h_ub_vec_precise[hidunit_no]/(h_ub_vec_precise[hidunit_no]-h_lb_vec_precise[hidunit_no])
+                mu_ = -h_lb_vec_precise[hidunit_no]*lambda_
+                m.addConstr(r[hidunit_no] <= lambda_*h[hidunit_no]+mu_)
+                m.addConstr(r[hidunit_no] >= h[hidunit_no])
+
+    if np.sum(r_ub_vec >= r_lb_vec[label]) > 1:
+        verified_flag = False
+    else:
+        verified_flag = True
+    return r_lb_vec,r_ub_vec,verified_flag
 
 
 if __name__ == '__main__':
     from sys import argv
+
     if len(argv) < 3 or len(argv) > 4:
         print('usage: python3.6 ' + argv[0] + ' net.txt spec.txt [timeout]')
         exit(1)
-
     netname = argv[1]
     specname = argv[2]
     epsilon = float(argv[3])
-    #c_label = int(argv[4])
+    layer_strategy = decide_strategy(netname)
+    print("layer strategy:" + str(layer_strategy))
+
+    result_file_name = netname.split('/')[1].split('.')[0]+'_eps_'+str(epsilon)
+    result_file_path = os.path.join('riai_project_output',result_file_name)
+    f_output = open(result_file_path,'w')
+
     with open(netname, 'r') as netfile:
         netstring = netfile.read()
+    nn = parse_net(netstring)
+    # count = 0
+    # total_count = 100
+    # signal.alarm(420)
+    # [8,62,66,92] 6_100
+    # [2,15,18,31,33,40,46,59,62,63,64,65,92] 6_200
+    # [2,4,6,7,9]
+    # specname = os.path.join('mnist_images','img'+str(img_id)+'.txt')
     with open(specname, 'r') as specfile:
         specstring = specfile.read()
-    nn = parse_net(netstring)
     x0_low, x0_high = parse_spec(specstring)
-    LB_N0, UB_N0 = get_perturbed_image(x0_low,0)
-    
-    label, _ = analyze(nn,LB_N0,UB_N0,0)
+    LB_N0, UB_N0 = get_perturbed_image(x0_low, 0)
+
+    label= predict(nn, LB_N0)
     start = time.time()
-    if(label==int(x0_low[0])):
-        LB_N0, UB_N0 = get_perturbed_image(x0_low,epsilon)
-        _, verified_flag = analyze(nn,LB_N0,UB_N0,label)
-        if(verified_flag):
-            print("verified")
+
+    if (label == int(x0_low[0])):
+        LB_N0, UB_N0 = get_perturbed_image(x0_low, epsilon)
+        try:
+            lb,ub,verified_flag = analyze(nn, LB_N0, UB_N0,label,layer_strategy)
+        except TimeoutException:
+            verified_flag = False
         else:
-            print("can not be verified")  
+            signal.alarm(0)
+        if (verified_flag):
+            print("verified")
+            verified_output = 'verified'
+            # count += 1
+        else:
+            print("can not be verified")
+            verified_output = 'failed'
     else:
-        print("image not correctly classified by the network. expected label ",int(x0_low[0]), " classified label: ", label)
+        print("image not correctly classified by the network. expected label ", int(x0_low[0]), " classified label: ",
+              label)
+        verified_output = 'not considered'
+        # total_count -= 1
     end = time.time()
-    print("analysis time: ", (end-start), " seconds")
-    
+    print("analysis time: ", (end - start), " seconds")
+    # sys.stdout.flush()
+    # output_line = '\t'.join(['img',str(img_id),verified_output,str(end-start)])+'\n'
+    # f_output.write(output_line)
+    # f_output.write('analysis precision  {} /  {}'.format(count,total_count))
+
 
