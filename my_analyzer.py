@@ -214,10 +214,10 @@ def decide_strategy(netname):
 
     if layer_num == 3:
         layer_strategy = [0,1,1]
-    elif layer_num == 6 and unit_num <= 100:
+    elif layer_num == 6 and unit_num == 100:
         layer_strategy = [0,1,1,1,1,1]
     elif layer_num == 6 and unit_num == 200:
-        layer_strategy = [0,1,1,1,1,1]
+        layer_strategy = [0,1,1,1,2,1]
     elif layer_num == 9 and unit_num == 100:
         layer_strategy = [0,1,1,1,2,2]
     elif layer_num == 9 and unit_num == 200:
@@ -253,7 +253,7 @@ def analyze(nn, LB_N0, UB_N0, label, layer_strategy):
         h_ub_vec_sound = np.sum(np.max(potential_bd, axis=0), axis=1)
 
         if layer_strategy[layer_no] == 0:
-            h_ub_vec_precise,h_lb_vec_precise = h_lb_vec_sound,h_ub_vec_sound
+            h_ub_vec_precise,h_lb_vec_precise = h_ub_vec_sound,h_lb_vec_sound
         elif layer_strategy[layer_no] == 1:
             h_ub_vec_precise, h_lb_vec_precise = full_lp(m,h,h_lb_vec_sound,h_ub_vec_sound)
         elif layer_strategy[layer_no] == 2:
@@ -311,7 +311,9 @@ if __name__ == '__main__':
     nn = parse_net(netstring)
     count = 0
     total_count = 100
-    for img_id in [1]:
+    # [8,62,66,92] 6_100
+    # [2,15,18,31,33,40,46,59,62,63,64,65,92]
+    for img_id in [2,15,18,32]:
         specname = os.path.join('mnist_images','img'+str(img_id)+'.txt')
         with open(specname, 'r') as specfile:
             specstring = specfile.read()
