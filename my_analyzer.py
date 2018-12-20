@@ -126,18 +126,110 @@ def predict(nn, input_arr):
     label = np.argmax(r)
     return label
 
-def calculate_score(ground_truth, output_file):
-    score = 0
-    with open(ground_truth,'r') as gt, open(output_line, 'r') as output:
-        gt_lines = gt.readlines()
-        output_lines = output.readlines()
-        assert len(gt_lines) == len(output_lines)
-        for i in range(len(gt_lines)):
-            gt_result = gt_lines[i].split(' ')[3]
-            output_result = output_lines[i].split('\t')
+
+def sample_lp(m,h,h_lb_vec_sound,h_ub_vec_sound,sample_neuron_num,random_sample=True):
+    ub_diff_list = []
+    lb_diff_list = []
+    h_lb_vec_precise = np.array(h_lb_vec_sound)
+    h_ub_vec_precise = np.array(h_ub_vec_sound)
+    if random_sample:
+        sample_id = np.random.randint(0,len(h),sample_neuron_num)
+    else:
+        sample_id = range(sample_neuron_num)
+
+    for i in sample_id:
+        a = time.time()
+        m.setObjective(h[i], GRB.MINIMIZE)
+        m.optimize()
+        if hasattr(m,'objVal'):
+            h_lb_vec_precise[i] = m.objVal
+            lb_diff = m.objVal - h_lb_vec_sound[i]
+            lb_diff_list.append(lb_diff)
+            print(i, time.time() - a, m.objVal)
+        else:
+            lb_diff_list.append(0)
+            print(i, time.time() - a, 0)
+
+        a = time.time()
+        m.setObjective(h[i], GRB.MAXIMIZE)
+        m.optimize()
+
+        if hasattr(m, 'objVal'):
+            h_ub_vec_precise[i] = m.objVal
+            ub_diff = h_ub_vec_sound[i] - m.objVal
+            ub_diff_list.append(ub_diff)
+            print(i, time.time() - a, m.objVal)
+        else:
+            ub_diff_list.append(0)
+            print(i, time.time() - a, 0)
+    return h_ub_vec_precise,h_lb_vec_precise
 
 
-def analyze(nn, LB_N0, UB_N0, label):
+def full_lp(m, h, h_lb_vec_sound, h_ub_vec_sound):
+    h_lb_vec_precise = np.array(h_lb_vec_sound)
+    h_ub_vec_precise = np.array(h_ub_vec_sound)
+    for i in range(len(h)):
+
+        a = time.time()
+        m.setObjective(h[i], GRB.MINIMIZE)
+        m.optimize()
+        print(i, time.time() - a)
+        if hasattr(m,'objVal'):
+            h_lb_vec_precise[i] = m.objVal
+
+        a = time.time()
+        m.setObjective(h[i], GRB.MAXIMIZE)
+        m.optimize()
+        print(i, time.time() - a)
+        if hasattr(m,'objVal'):
+            h_ub_vec_precise[i] = m.objVal
+    return h_ub_vec_precise,h_lb_vec_precise
+
+
+def symmetric_lp(m,h,h_lb_vec_sound,h_ub_vec_sound):
+    h_lb_vec_precise = np.array(h_lb_vec_sound)
+    h_ub_vec_precise = np.array(h_ub_vec_sound)
+    for i in range(len(h)):
+
+        a = time.time()
+        m.setObjective(h[i], GRB.MINIMIZE)
+        m.optimize()
+        print(i, time.time() - a)
+        if hasattr(m, 'objVal'):
+            h_lb_vec_precise[i] = m.objVal
+            diff = m.objVal - h_lb_vec_sound[i]
+            h_ub_vec_precise[i] = h_ub_vec_sound[i]-diff
+
+    return h_ub_vec_precise, h_lb_vec_precise
+
+
+def bound_approx_with_constant():
+    pass
+
+
+def decide_strategy(netname):
+    items = netname.split('.')[0].split('_')
+    layer_num = int(items[-2])
+    unit_num = int(items[-1])
+
+    if layer_num == 3:
+        layer_strategy = [0,1,1]
+    elif layer_num == 6 and unit_num <= 100:
+        layer_strategy = [0,1,1,1,1,1]
+    elif layer_num == 6 and unit_num == 200:
+        layer_strategy = [0,1,1,1,1,1]
+    elif layer_num == 9 and unit_num == 100:
+        layer_strategy = [0,1,1,1,2,2]
+    elif layer_num == 9 and unit_num == 200:
+        layer_strategy = [0,1,1,2,2,2]
+    elif layer_num == 4 and unit_num == 1024:
+        layer_strategy = [0,1,3,0]
+    else:
+        layer_strategy = np.ones(layer_num,type==int)
+    return layer_strategy
+
+
+def analyze(nn, LB_N0, UB_N0, label, layer_strategy):
     # Create a new model
     m = Model("mip1")
     m.setParam('OutputFlag', False)
@@ -146,13 +238,9 @@ def analyze(nn, LB_N0, UB_N0, label):
     r = [m.addVar(name="i%s" % str(i),vtype='C',lb=LB_N0[i],ub=UB_N0[i]) for i in range(input_dim)]
     r_lb_vec = LB_N0
     r_ub_vec = UB_N0
-    ub_precise_list = []
-    ub_sound_list = []
-    lb_precise_list = []
-    lb_sound_list = []
-    ub_diff_list = []
-    lb_diff_list = []
     for layer_no in range(nn.numlayer):
+        print(layer_no)
+
         weight = nn.weights[layer_no]
         bias = nn.biases[layer_no]
         temp = weight * r
@@ -164,35 +252,20 @@ def analyze(nn, LB_N0, UB_N0, label):
         h_lb_vec_sound = np.sum(np.min(potential_bd, axis=0), axis=1)  # hidden units bound
         h_ub_vec_sound = np.sum(np.max(potential_bd, axis=0), axis=1)
 
-        h_lb_vec_precise = []
-        h_ub_vec_precise = []
-        thre_no = 9
-        if 0 < layer_no < thre_no:
-            for i in range(len(h)):
-                m.setObjective(h[i], GRB.MINIMIZE)
-                m.optimize()
-                try:
-                    h_lb_vec_precise.append(m.objVal)
-                    diff = m.objVal-h_lb_vec_sound[i]
-                    h_ub_vec_precise.append(h_ub_vec_sound[i]-diff)
-                except AttributeError:
-                    h_lb_vec_precise.append(h_lb_vec_sound[i])
-                    h_ub_vec_precise.append(h_ub_vec_sound[i])
-                # m.setObjective(h[i], GRB.MAXIMIZE)
-                # m.optimize()
-                # try:
-                #     h_ub_vec_precise.append(m.objVal)
-                # except AttributeError:
-                #     h_ub_vec_precise.append(h_ub_vec_sound[i])
-            ub_diff_list.append(np.array(h_ub_vec_precise)-np.array(h_ub_vec_sound))
-            lb_diff_list.append(np.array(h_lb_vec_precise)-np.array(h_lb_vec_sound))
-            ub_precise_list.append(np.array(h_ub_vec_precise))
-            lb_precise_list.append(np.array(h_lb_vec_precise))
-            ub_sound_list.append(np.array(h_ub_vec_sound))
-            lb_sound_list.append(np.array(h_lb_vec_sound))
-        elif layer_no == 0:
-            h_lb_vec_precise = h_lb_vec_sound
-            h_ub_vec_precise = h_ub_vec_sound
+        if layer_strategy[layer_no] == 0:
+            h_ub_vec_precise,h_lb_vec_precise = h_lb_vec_sound,h_ub_vec_sound
+        elif layer_strategy[layer_no] == 1:
+            h_ub_vec_precise, h_lb_vec_precise = full_lp(m,h,h_lb_vec_sound,h_ub_vec_sound)
+        elif layer_strategy[layer_no] == 2:
+            h_ub_vec_precise, h_lb_vec_precise = symmetric_lp(m,h,h_lb_vec_sound,h_ub_vec_sound)
+        elif layer_strategy[layer_no] == 3:
+            if layer_no == nn.numlayer-1:
+                sample_neuron_num = 2
+            else:
+                sample_neuron_num = 10
+            h_ub_vec_precise,h_lb_vec_precise = sample_lp(m,h,h_lb_vec_sound,h_ub_vec_sound,sample_neuron_num)
+        else:
+            h_ub_vec_precise, h_lb_vec_precise = full_lp(m,h,h_lb_vec_sound,h_ub_vec_sound)
 
         r_lb_vec = np.clip(h_lb_vec_precise,0,np.inf) # relu units bound estimate
         r_ub_vec = np.clip(h_ub_vec_precise,0,np.inf)
@@ -209,13 +282,13 @@ def analyze(nn, LB_N0, UB_N0, label):
                 mu_ = -h_lb_vec_precise[hidunit_no]*lambda_
                 m.addConstr(r[hidunit_no] <= lambda_*h[hidunit_no]+mu_)
                 m.addConstr(r[hidunit_no] >= h[hidunit_no])
-    bound_list =np.concatenate((ub_precise_list,ub_sound_list,lb_precise_list,lb_sound_list),axis=0)
-    diff_list = np.concatenate((ub_diff_list,lb_diff_list),axis=0)
+
     if np.sum(r_ub_vec >= r_lb_vec[label]) > 1:
         verified_flag = False
     else:
         verified_flag = True
-    return r_lb_vec,r_ub_vec,verified_flag,bound_list,diff_list
+    return r_lb_vec,r_ub_vec,verified_flag
+
 
 if __name__ == '__main__':
     from sys import argv
@@ -226,10 +299,10 @@ if __name__ == '__main__':
     netname = argv[1]
     # specname = argv[2]
     epsilon = float(argv[2])
+    layer_strategy = decide_strategy(netname)
+    print(layer_strategy)
 
-    #netname = 'mnist_nets/mnist_relu_6_100.txt'
-    #epsilon = 0.01
-    result_file_name = netname.split('/')[1].split('.')[0]+'_eps_'+str(epsilon)+'_first_3_precise_with_2_constrain_single'
+    result_file_name = netname.split('/')[1].split('.')[0]+'_eps_'+str(epsilon)
     result_file_path = os.path.join('riai_project_output',result_file_name)
     f_output = open(result_file_path,'w')
 
@@ -251,9 +324,7 @@ if __name__ == '__main__':
         if (label == int(x0_low[0])):
             LB_N0, UB_N0 = get_perturbed_image(x0_low, epsilon)
             try:
-                lb,ub,verified_flag,bound_list,diff_list = analyze(nn, LB_N0, UB_N0,label)
-                np.save('bound.npy',bound_list)
-                np.save('diff.npy',diff_list)
+                lb,ub,verified_flag = analyze(nn, LB_N0, UB_N0,label,layer_strategy)
             except TimeoutException:
                 verified_flag = False
             else:
@@ -280,8 +351,8 @@ if __name__ == '__main__':
 # max_purt = []
 # cor = []
 # for i in (range(7)):
-#     bdlen = bound[i]-bound[i+14]
-#     purt = np.sum(np.abs(nn.weights[i+1]*bdlen),axis = 1)
+#     bdlen = bound1024[0]-bound1024[2]
+#     purt = np.sum(np.abs(nn4.weights[1]*bdlen),axis = 1)
 #     max_purt.append(purt)
 #     cor.append(np.corrcoef(purt,diff[i])[0,1])
 # max_purt = np.array(max_purt)
