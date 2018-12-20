@@ -135,6 +135,10 @@ def analyze(nn, LB_N0, UB_N0, label):
     r = [m.addVar(name="i%s" % str(i),vtype='C',lb=LB_N0[i],ub=UB_N0[i]) for i in range(input_dim)]
     r_lb_vec = LB_N0
     r_ub_vec = UB_N0
+    ub_precise_list = []
+    ub_sound_list = []
+    lb_precise_list = []
+    lb_sound_list = []
     ub_diff_list = []
     lb_diff_list = []
     for layer_no in range(nn.numlayer):
@@ -150,26 +154,36 @@ def analyze(nn, LB_N0, UB_N0, label):
 
         h_lb_vec_precise = []
         h_ub_vec_precise = []
-        if 0 < layer_no < 6:
+        thre_no = 8
+        if 0 < layer_no < thre_no:
             for i in range(len(h)):
                 m.setObjective(h[i], GRB.MINIMIZE)
                 m.optimize()
                 try:
                     h_lb_vec_precise.append(m.objVal)
+                    diff = m.objVal-h_lb_vec_sound[i]
+                    h_ub_vec_precise.append(h_ub_vec_sound[i]-diff)
                 except AttributeError:
                     h_lb_vec_precise.append(h_lb_vec_sound[i])
-
-                m.setObjective(h[i], GRB.MAXIMIZE)
-                m.optimize()
-                try:
-                    h_ub_vec_precise.append(m.objVal)
-                except AttributeError:
                     h_ub_vec_precise.append(h_ub_vec_sound[i])
+                # m.setObjective(h[i], GRB.MAXIMIZE)
+                # m.optimize()
+                # try:
+                #     h_ub_vec_precise.append(m.objVal)
+                # except AttributeError:
+                #     h_ub_vec_precise.append(h_ub_vec_sound[i])
             ub_diff_list.append(np.array(h_ub_vec_precise)-np.array(h_ub_vec_sound))
             lb_diff_list.append(np.array(h_lb_vec_precise)-np.array(h_lb_vec_sound))
+            ub_precise_list.append(np.array(h_ub_vec_precise))
+            lb_precise_list.append(np.array(h_lb_vec_precise))
+            ub_sound_list.append(np.array(h_ub_vec_sound))
+            lb_sound_list.append(np.array(h_lb_vec_sound))
+        elif layer_no == 0:
+            h_lb_vec_precise = h_lb_vec_sound
+            h_ub_vec_precise = h_ub_vec_sound
         else:
-            h_lb_vec_precise = h_lb_vec_sound+0.5
-            h_ub_vec_precise = h_ub_vec_sound-0.5
+            h_lb_vec_precise = h_lb_vec_sound
+            h_ub_vec_precise = h_ub_vec_sound
 
         r_lb_vec = np.clip(h_lb_vec_precise,0,np.inf) # relu units bound estimate
         r_ub_vec = np.clip(h_ub_vec_precise,0,np.inf)
@@ -185,7 +199,7 @@ def analyze(nn, LB_N0, UB_N0, label):
                 lambda_ = h_ub_vec_precise[hidunit_no]/(h_ub_vec_precise[hidunit_no]-h_lb_vec_precise[hidunit_no])
                 mu_ = -h_lb_vec_precise[hidunit_no]*lambda_
                 m.addConstr(r[hidunit_no] <= lambda_*h[hidunit_no]+mu_)
-                #m.addConstr(r[hidunit_no] >= h[hidunit_no])
+                m.addConstr(r[hidunit_no] >= h[hidunit_no])
     # get final bound
     # for i in range(len(r)):
     #     m.setObjective(r[i], GRB.MINIMIZE)
@@ -194,12 +208,13 @@ def analyze(nn, LB_N0, UB_N0, label):
     #     m.setObjective(r[i], GRB.MAXIMIZE)
     #     m.optimize()
     #     r_ub_vec[i] = m.objVal
-
+    bound_list =np.concatenate((ub_precise_list,ub_sound_list,lb_precise_list,lb_sound_list),axis=0)
+    diff_list = np.concatenate((ub_diff_list,lb_diff_list),axis=0)
     if np.sum(r_ub_vec >= r_lb_vec[label]) > 1:
         verified_flag = False
     else:
         verified_flag = True
-    return r_lb_vec,r_ub_vec,verified_flag,ub_diff_list,lb_diff_list
+    return r_lb_vec,r_ub_vec,verified_flag,bound_list,diff_list
 
 if __name__ == '__main__':
     from sys import argv
@@ -234,8 +249,9 @@ if __name__ == '__main__':
 
         if (label == int(x0_low[0])):
             LB_N0, UB_N0 = get_perturbed_image(x0_low, epsilon)
-            lb,ub,verified_flag,ub_diff,lb_diff = analyze(nn, LB_N0, UB_N0,label)
-            np.save('diff.npy',np.concatenate((ub_diff,lb_diff),axis=0))
+            lb,ub,verified_flag,bound_list,diff_list = analyze(nn, LB_N0, UB_N0,label)
+            np.save('bound.npy',bound_list)
+            np.save('diff.npy',diff_list)
             if (verified_flag):
                 print("verified")
                 verified_output = 'verified'
