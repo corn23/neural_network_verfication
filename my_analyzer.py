@@ -6,6 +6,16 @@ from gurobipy import *
 from functools import reduce
 import os
 import sys
+import signal
+
+class TimeoutException(Exception):   # Custom exception class
+    pass
+
+def timeout_handler(signum, frame):   # Custom signal handler
+    raise TimeoutException
+
+# Change the behavior of SIGALRM
+signal.signal(signal.SIGALRM, timeout_handler)
 
 class layers:
     def __init__(self):
@@ -156,7 +166,7 @@ def analyze(nn, LB_N0, UB_N0, label):
 
         h_lb_vec_precise = []
         h_ub_vec_precise = []
-        thre_no = 8
+        thre_no = 9
         if 0 < layer_no < thre_no:
             for i in range(len(h)):
                 m.setObjective(h[i], GRB.MINIMIZE)
@@ -181,9 +191,6 @@ def analyze(nn, LB_N0, UB_N0, label):
             ub_sound_list.append(np.array(h_ub_vec_sound))
             lb_sound_list.append(np.array(h_lb_vec_sound))
         elif layer_no == 0:
-            h_lb_vec_precise = h_lb_vec_sound
-            h_ub_vec_precise = h_ub_vec_sound
-        else:
             h_lb_vec_precise = h_lb_vec_sound
             h_ub_vec_precise = h_ub_vec_sound
 
@@ -240,12 +247,17 @@ if __name__ == '__main__':
 
         label= predict(nn, LB_N0)
         start = time.time()
-
+        signal.alarm(420)
         if (label == int(x0_low[0])):
             LB_N0, UB_N0 = get_perturbed_image(x0_low, epsilon)
-            lb,ub,verified_flag,bound_list,diff_list = analyze(nn, LB_N0, UB_N0,label)
-            np.save('bound.npy',bound_list)
-            np.save('diff.npy',diff_list)
+            try:
+                lb,ub,verified_flag,bound_list,diff_list = analyze(nn, LB_N0, UB_N0,label)
+                np.save('bound.npy',bound_list)
+                np.save('diff.npy',diff_list)
+            except TimeoutException:
+                verified_flag = False
+            else:
+                signal.alarm(0)
             if (verified_flag):
                 print("verified")
                 verified_output = 'verified'
